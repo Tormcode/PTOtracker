@@ -1,0 +1,762 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PTO Tracker</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom styles for the Inter font and to ensure full height */
+        body {
+            font-family: 'Inter', sans-serif;
+            min-height: 100vh; /* Ensure body takes full viewport height */
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background-color: #f3f4f6; /* bg-gray-100 */
+            padding: 1rem; /* p-4 */
+        }
+        /* Style for the modal overlay */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(107, 114, 128, 0.5); /* bg-gray-600 with opacity */
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 50;
+        }
+        /* Hidden utility class */
+        .hidden {
+            display: none !important;
+        }
+        /* Spinner animation for loading states */
+        .animate-spin {
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div id="app-container" class="bg-white p-8 rounded-lg shadow-xl w-full max-w-md md:max-w-lg lg:max-w-xl">
+        </div>
+
+    <div id="modal-container" class="modal-overlay hidden">
+        <div class="bg-white p-6 rounded-lg shadow-xl w-full max-w-md">
+            <h3 id="modal-title" class="text-2xl font-bold text-gray-800 mb-4"></h3>
+            <textarea id="modal-content" readonly class="w-full h-48 p-3 border border-gray-300 rounded-md bg-gray-50 resize-none text-sm"></textarea>
+            <div class="mt-4 flex justify-end space-x-2">
+                <button id="modal-copy-btn" class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 transition duration-300">
+                    Copy to Clipboard
+                </button>
+                <button id="modal-close-btn" class="bg-gray-300 text-gray-800 px-4 py-2 rounded-md hover:bg-gray-400 transition duration-300">
+                    Close
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- Global State Management ---
+        let loggedInUser = null;
+        let currentView = 'login';
+        let ptoRequests = [];
+        let users = [
+            {
+                id: 'emp001',
+                name: 'Alice Smith',
+                email: 'alice@example.com',
+                password: 'password123', // In a real app, this would be a hashed password
+                ptoBalance: 20,
+                sickBalance: 10,
+                role: 'employee',
+            },
+            {
+                id: 'emp002',
+                name: 'Bob Johnson',
+                email: 'bob@example.com',
+                password: 'password123',
+                ptoBalance: 15,
+                sickBalance: 8,
+                role: 'employee',
+            },
+            {
+                id: 'mgr001',
+                name: 'Carol White',
+                email: 'carol@example.com',
+                password: 'password123',
+                ptoBalance: 25,
+                sickBalance: 12,
+                role: 'manager', // Example of a manager role
+            },
+        ];
+
+        // --- DOM Elements ---
+        const appContainer = document.getElementById('app-container');
+        const modalContainer = document.getElementById('modal-container');
+        const modalTitle = document.getElementById('modal-title');
+        const modalContent = document.getElementById('modal-content');
+        const modalCopyBtn = document.getElementById('modal-copy-btn');
+        const modalCloseBtn = document.getElementById('modal-close-btn');
+
+        // --- Utility Functions ---
+
+        /**
+         * Displays a modal with generated content.
+         * @param {string} title - The title of the modal.
+         * @param {string} content - The content to display in the modal's textarea.
+         * @param {function} onCopyCallback - Function to call when copy button is clicked.
+         */
+        function showModal(title, content, onCopyCallback) {
+            modalTitle.textContent = title;
+            modalContent.value = content;
+            modalCopyBtn.onclick = () => onCopyCallback(content);
+            modalContainer.classList.remove('hidden');
+        }
+
+        /**
+         * Hides the currently displayed modal.
+         */
+        function hideModal() {
+            modalContainer.classList.add('hidden');
+            modalTitle.textContent = '';
+            modalContent.value = '';
+            modalCopyBtn.onclick = null;
+        }
+
+        /**
+         * Shows a loading spinner and disables a button.
+         * @param {HTMLElement} buttonElement - The button element to modify.
+         * @returns {string} The original text content of the button.
+         */
+        function showLoading(buttonElement) {
+            const originalText = buttonElement.innerHTML;
+            buttonElement.innerHTML = `
+                <svg class="animate-spin h-5 w-5 mr-3 text-white" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                Loading...
+            `;
+            buttonElement.disabled = true;
+            return originalText;
+        }
+
+        /**
+         * Hides the loading spinner and restores the button's original state.
+         * @param {HTMLElement} buttonElement - The button element to modify.
+         * @param {string} originalText - The original text content of the button.
+         */
+        function hideLoading(buttonElement, originalText) {
+            buttonElement.innerHTML = originalText;
+            buttonElement.disabled = false;
+        }
+
+        /**
+         * Copies text to the clipboard.
+         * @param {string} text - The text to copy.
+         */
+        function copyToClipboard(text) {
+            const textarea = document.createElement('textarea');
+            textarea.value = text;
+            document.body.appendChild(textarea);
+            textarea.select();
+            try {
+                document.execCommand('copy');
+                // Using alert for simplicity in prototype, replace with custom message box in production
+                alert('Copied to clipboard!');
+            } catch (err) {
+                console.error('Failed to copy text: ', err);
+                alert('Failed to copy to clipboard. Please copy manually.');
+            }
+            document.body.removeChild(textarea);
+        }
+
+        // --- Core Application Logic ---
+
+        /**
+         * Handles user login.
+         * @param {string} email - User's email.
+         * @param {string} password - User's password.
+         * @returns {boolean} True if login successful, false otherwise.
+         */
+        function handleLogin(email, password) {
+            const user = users.find(u => u.email === email && u.password === password);
+            if (user) {
+                loggedInUser = user;
+                navigateTo('dashboard');
+                return true;
+            }
+            return false;
+        }
+
+        /**
+         * Handles user logout.
+         */
+        function handleLogout() {
+            loggedInUser = null;
+            navigateTo('login');
+        }
+
+        /**
+         * Handles submitting a new PTO request.
+         * @param {object} requestData - Data for the new request.
+         */
+        function handleRequestPto(requestData) {
+            const newRequestId = `req${ptoRequests.length + 1}`;
+            const newRequest = {
+                id: newRequestId,
+                userId: loggedInUser.id,
+                userName: loggedInUser.name,
+                requestDate: new Date().toLocaleDateString(),
+                status: 'Pending',
+                managerNotes: '',
+                ...requestData,
+            };
+            ptoRequests.push(newRequest);
+            navigateTo('my-requests');
+        }
+
+        /**
+         * Handles updating the status of a PTO request by a manager.
+         * @param {string} requestId - ID of the request to update.
+         * @param {string} newStatus - New status ('Approved' or 'Denied').
+         * @param {string} managerNotes - Notes from the manager.
+         */
+        function handleUpdateRequestStatus(requestId, newStatus, managerNotes) {
+            const requestIndex = ptoRequests.findIndex(req => req.id === requestId);
+            if (requestIndex !== -1) {
+                const updatedRequest = { ...ptoRequests[requestIndex], status: newStatus, managerNotes: managerNotes };
+                ptoRequests[requestIndex] = updatedRequest;
+
+                // If approved, deduct from employee's balance
+                if (newStatus === 'Approved') {
+                    const employeeIndex = users.findIndex(user => user.id === updatedRequest.userId);
+                    if (employeeIndex !== -1) {
+                        const updatedUser = { ...users[employeeIndex] };
+                        if (updatedRequest.type === 'PTO') {
+                            updatedUser.ptoBalance -= updatedRequest.duration;
+                        } else if (updatedRequest.type === 'Sick') {
+                            updatedUser.sickBalance -= updatedRequest.duration;
+                        }
+                        users[employeeIndex] = updatedUser;
+                    }
+                }
+                // Re-render the manager dashboard to reflect changes
+                navigateTo('manager-dashboard');
+            }
+        }
+
+        /**
+         * Navigates to a different view/page.
+         * @param {string} view - The view to navigate to ('login', 'dashboard', etc.).
+         */
+        function navigateTo(view) {
+            currentView = view;
+            renderCurrentView();
+        }
+
+        /**
+         * Renders the current view based on the `currentView` state.
+         */
+        function renderCurrentView() {
+            appContainer.innerHTML = ''; // Clear previous content
+
+            if (!loggedInUser) {
+                renderLoginPage();
+                return;
+            }
+
+            switch (currentView) {
+                case 'dashboard':
+                    renderDashboardPage();
+                    break;
+                case 'request-pto':
+                    renderRequestPTOPage();
+                    break;
+                case 'my-requests':
+                    renderMyRequestsPage();
+                    break;
+                case 'manager-dashboard':
+                    if (loggedInUser.role === 'manager') {
+                        renderManagerDashboardPage();
+                    } else {
+                        navigateTo('dashboard'); // Redirect if not a manager
+                    }
+                    break;
+                default:
+                    renderLoginPage();
+            }
+        }
+
+        // --- Page Rendering Functions ---
+
+        function renderLoginPage() {
+            appContainer.innerHTML = `
+                <div class="text-center">
+                    <h2 class="text-3xl font-bold text-gray-800 mb-6">PTO Tracker Login</h2>
+                    <form id="login-form" class="space-y-4">
+                        <div>
+                            <input type="email" id="login-email" placeholder="Email"
+                                class="w-full p-3 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500" required />
+                        </div>
+                        <div>
+                            <input type="password" id="login-password" placeholder="Password"
+                                class="w-full p-3 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500" required />
+                        </div>
+                        <p id="login-error" class="text-red-500 text-sm hidden"></p>
+                        <button type="submit"
+                            class="w-full bg-blue-600 text-white p-3 rounded-md hover:bg-blue-700 transition duration-300 shadow-md">
+                            Login
+                        </button>
+                    </form>
+                    <p class="mt-6 text-gray-600 text-sm">
+                        <span class="font-semibold">Test Accounts:</span>
+                        <br />
+                        Employee: alice@example.com / password123
+                        <br />
+                        Employee: bob@example.com / password123
+                        <br />
+                        Manager: carol@example.com / password123
+                    </p>
+                </div>
+            `;
+
+            document.getElementById('login-form').addEventListener('submit', (e) => {
+                e.preventDefault();
+                const email = document.getElementById('login-email').value;
+                const password = document.getElementById('login-password').value;
+                const errorElement = document.getElementById('login-error');
+
+                if (handleLogin(email, password)) {
+                    errorElement.classList.add('hidden');
+                } else {
+                    errorElement.textContent = 'Invalid email or password.';
+                    errorElement.classList.remove('hidden');
+                }
+            });
+        }
+
+        function renderDashboardPage() {
+            appContainer.innerHTML = `
+                <div class="text-center">
+                    <h2 class="text-3xl font-bold text-gray-800 mb-6">Welcome, ${loggedInUser.name}!</h2>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
+                        <div class="bg-blue-50 p-6 rounded-lg shadow-sm">
+                            <h3 class="text-xl font-semibold text-blue-800">PTO Balance</h3>
+                            <p class="text-4xl font-extrabold text-blue-600 mt-2">${loggedInUser.ptoBalance} days</p>
+                        </div>
+                        <div class="bg-green-50 p-6 rounded-lg shadow-sm">
+                            <h3 class="text-xl font-semibold text-green-800">Sick Balance</h3>
+                            <p class="text-4xl font-extrabold text-green-600 mt-2">${loggedInUser.sickBalance} days</p>
+                        </div>
+                    </div>
+                    <div class="space-y-4">
+                        <button id="request-pto-btn"
+                            class="w-full bg-purple-600 text-white p-3 rounded-md hover:bg-purple-700 transition duration-300 shadow-md">
+                            Request PTO
+                        </button>
+                        <button id="my-requests-btn"
+                            class="w-full bg-indigo-600 text-white p-3 rounded-md hover:bg-indigo-700 transition duration-300 shadow-md">
+                            View My Requests
+                        </button>
+                        ${loggedInUser.role === 'manager' ? `
+                        <button id="manager-dashboard-btn"
+                            class="w-full bg-orange-600 text-white p-3 rounded-md hover:bg-orange-700 transition duration-300 shadow-md">
+                            Manage PTO Requests
+                        </button>
+                        ` : ''}
+                        <button id="logout-btn"
+                            class="w-full bg-gray-300 text-gray-800 p-3 rounded-md hover:bg-gray-400 transition duration-300 shadow-md">
+                            Logout
+                        </button>
+                    </div>
+                </div>
+            `;
+
+            document.getElementById('request-pto-btn').addEventListener('click', () => navigateTo('request-pto'));
+            document.getElementById('my-requests-btn').addEventListener('click', () => navigateTo('my-requests'));
+            if (loggedInUser.role === 'manager') {
+                document.getElementById('manager-dashboard-btn').addEventListener('click', () => navigateTo('manager-dashboard'));
+            }
+            document.getElementById('logout-btn').addEventListener('click', handleLogout);
+        }
+
+        function renderRequestPTOPage() {
+            appContainer.innerHTML = `
+                <div class="text-center">
+                    <h2 class="text-3xl font-bold text-gray-800 mb-6">Request Time Off</h2>
+                    <form id="request-pto-form" class="space-y-4">
+                        <div>
+                            <label for="startDate" class="block text-left text-gray-700 text-sm font-medium mb-1">Start Date</label>
+                            <input type="date" id="startDate"
+                                class="w-full p-3 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500" required />
+                        </div>
+                        <div>
+                            <label for="endDate" class="block text-left text-gray-700 text-sm font-medium mb-1">End Date</label>
+                            <input type="date" id="endDate"
+                                class="w-full p-3 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500" required />
+                        </div>
+                        <div>
+                            <label for="leaveType" class="block text-left text-gray-700 text-sm font-medium mb-1">Type of Leave</label>
+                            <select id="leaveType"
+                                class="w-full p-3 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500">
+                                <option value="PTO">Paid Time Off (PTO)</option>
+                                <option value="Sick">Sick Leave</option>
+                                <option value="Unpaid">Unpaid Leave</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label for="comments" class="block text-left text-gray-700 text-sm font-medium mb-1">Comments (Optional)</label>
+                            <textarea id="comments" rows="3"
+                                class="w-full p-3 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"></textarea>
+                        </div>
+                        <p id="request-error" class="text-red-500 text-sm hidden"></p>
+                        <button type="submit"
+                            class="w-full bg-green-600 text-white p-3 rounded-md hover:bg-green-700 transition duration-300 shadow-md">
+                            Submit Request
+                        </button>
+                        <button type="button" id="back-to-dashboard-btn"
+                            class="w-full bg-gray-300 text-gray-800 p-3 rounded-md hover:bg-gray-400 transition duration-300 shadow-md">
+                            Back to Dashboard
+                        </button>
+                    </form>
+                </div>
+            `;
+
+            document.getElementById('request-pto-form').addEventListener('submit', (e) => {
+                e.preventDefault();
+                const startDate = document.getElementById('startDate').value;
+                const endDate = document.getElementById('endDate').value;
+                const leaveType = document.getElementById('leaveType').value;
+                const comments = document.getElementById('comments').value;
+                const errorElement = document.getElementById('request-error');
+                errorElement.classList.add('hidden');
+
+                if (!startDate || !endDate) {
+                    errorElement.textContent = 'Please select both start and end dates.';
+                    errorElement.classList.remove('hidden');
+                    return;
+                }
+
+                const start = new Date(startDate);
+                const end = new Date(endDate);
+
+                if (start > end) {
+                    errorElement.textContent = 'End date cannot be before start date.';
+                    errorElement.classList.remove('hidden');
+                    return;
+                }
+
+                const diffTime = Math.abs(end - start);
+                const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+
+                if (leaveType === 'PTO' && diffDays > loggedInUser.ptoBalance) {
+                    errorElement.textContent = `You only have ${loggedInUser.ptoBalance} PTO days remaining. This request exceeds your balance.`;
+                    errorElement.classList.remove('hidden');
+                }
+                if (leaveType === 'Sick' && diffDays > loggedInUser.sickBalance) {
+                    errorElement.textContent = `You only have ${loggedInUser.sickBalance} Sick days remaining. This request exceeds your balance.`;
+                    errorElement.classList.remove('hidden');
+                }
+
+                handleRequestPto({ startDate, endDate, type: leaveType, duration: diffDays, comments });
+            });
+
+            document.getElementById('back-to-dashboard-btn').addEventListener('click', () => navigateTo('dashboard'));
+        }
+
+        function renderMyRequestsPage() {
+            const userRequests = ptoRequests.filter(req => req.userId === loggedInUser.id);
+            appContainer.innerHTML = `
+                <div class="text-center">
+                    <h2 class="text-3xl font-bold text-gray-800 mb-6">My PTO Requests</h2>
+                    ${userRequests.length === 0 ? `
+                        <p class="text-gray-600">You have no submitted PTO requests yet.</p>
+                    ` : `
+                        <div class="overflow-x-auto">
+                            <table class="min-w-full bg-white border border-gray-200 rounded-lg shadow-sm">
+                                <thead class="bg-gray-50">
+                                    <tr>
+                                        <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Request Date</th>
+                                        <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Start Date</th>
+                                        <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">End Date</th>
+                                        <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Type</th>
+                                        <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Duration (Days)</th>
+                                        <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                                        <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Manager Notes</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-gray-200">
+                                    ${userRequests.map(req => `
+                                        <tr>
+                                            <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-900">${req.requestDate}</td>
+                                            <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-900">${req.startDate}</td>
+                                            <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-900">${req.endDate}</td>
+                                            <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-900">${req.type}</td>
+                                            <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-900">${req.duration}</td>
+                                            <td class="px-4 py-3 whitespace-nowrap text-sm">
+                                                <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full
+                                                    ${req.status === 'Pending' ? 'bg-yellow-100 text-yellow-800' :
+                                                      req.status === 'Approved' ? 'bg-green-100 text-green-800' :
+                                                      'bg-red-100 text-red-800'}">
+                                                    ${req.status}
+                                                </span>
+                                            </td>
+                                            <td class="px-4 py-3 text-sm text-gray-900 max-w-xs overflow-hidden text-ellipsis">${req.managerNotes || '-'}</td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                    `}
+                    <button id="back-to-dashboard-btn"
+                        class="mt-6 w-full bg-gray-300 text-gray-800 p-3 rounded-md hover:bg-gray-400 transition duration-300 shadow-md">
+                        Back to Dashboard
+                    </button>
+                </div>
+            `;
+            document.getElementById('back-to-dashboard-btn').addEventListener('click', () => navigateTo('dashboard'));
+        }
+
+        function renderManagerDashboardPage() {
+            const pendingRequests = ptoRequests.filter(req => req.status === 'Pending');
+
+            appContainer.innerHTML = `
+                <div class="text-center">
+                    <h2 class="text-3xl font-bold text-gray-800 mb-6">Manager Dashboard - Pending Requests</h2>
+
+                    <button id="summarize-requests-btn"
+                        class="w-full bg-blue-500 text-white p-3 rounded-md hover:bg-blue-600 transition duration-300 shadow-md mb-6 flex items-center justify-center">
+                        ✨ Summarize Pending Requests
+                    </button>
+
+                    ${pendingRequests.length === 0 ? `
+                        <p class="text-gray-600">No pending PTO requests at this time.</p>
+                    ` : `
+                        <div class="space-y-4" id="pending-requests-list">
+                            </div>
+                    `}
+                    <button id="back-to-dashboard-btn"
+                        class="mt-6 w-full bg-gray-300 text-gray-800 p-3 rounded-md hover:bg-gray-400 transition duration-300 shadow-md">
+                        Back to Dashboard
+                    </button>
+                </div>
+            `;
+
+            const pendingRequestsList = document.getElementById('pending-requests-list');
+            if (pendingRequestsList) {
+                pendingRequests.forEach(req => {
+                    const requestCard = document.createElement('div');
+                    requestCard.className = 'bg-gray-50 p-4 rounded-lg shadow-sm text-left border border-gray-200';
+                    requestCard.innerHTML = `
+                        <p class="text-lg font-semibold text-gray-800">${req.userName} - ${req.type} Request</p>
+                        <p class="text-sm text-gray-600">Dates: ${req.startDate} to ${req.endDate} (${req.duration} days)</p>
+                        <p class="text-sm text-gray-600">Submitted: ${req.requestDate}</p>
+                        ${req.comments ? `<p class="text-sm text-gray-700 italic">Comments: "${req.comments}"</p>` : ''}
+
+                        <div class="mt-3 flex space-x-2">
+                            <button class="approve-btn flex-1 bg-green-500 text-white px-3 py-2 rounded-md hover:bg-green-600 transition duration-300 text-sm" data-request-id="${req.id}">
+                                Approve
+                            </button>
+                            <button class="deny-btn flex-1 bg-red-500 text-white px-3 py-2 rounded-md hover:bg-red-600 transition duration-300 text-sm" data-request-id="${req.id}">
+                                Deny
+                            </button>
+                        </div>
+
+                        <div id="action-form-${req.id}" class="mt-4 p-3 bg-white rounded-md border border-gray-200 hidden">
+                            <h4 class="font-semibold mb-2">Add Manager Notes (<span class="action-type-text"></span>)</h4>
+                            <textarea class="manager-notes-textarea w-full p-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500 text-sm" rows="2" placeholder="Enter notes here..."></textarea>
+                            <div class="mt-2 flex justify-end space-x-2">
+                                <button class="confirm-action-btn px-4 py-2 rounded-md text-white text-sm"></button>
+                                <button class="draft-email-btn px-4 py-2 rounded-md bg-purple-600 text-white hover:bg-purple-700 transition duration-300 text-sm flex items-center justify-center">
+                                    ✨ Draft Email
+                                </button>
+                                <button class="cancel-action-btn px-4 py-2 rounded-md bg-gray-300 text-gray-800 hover:bg-gray-400 text-sm">
+                                    Cancel
+                                </button>
+                            </div>
+                        </div>
+                    `;
+                    pendingRequestsList.appendChild(requestCard);
+                });
+
+                // Attach event listeners for each request card
+                pendingRequestsList.querySelectorAll('.approve-btn').forEach(button => {
+                    button.addEventListener('click', (e) => openActionForm(e.target.dataset.requestId, 'approve'));
+                });
+                pendingRequestsList.querySelectorAll('.deny-btn').forEach(button => {
+                    button.addEventListener('click', (e) => openActionForm(e.target.dataset.requestId, 'deny'));
+                });
+            }
+
+            document.getElementById('summarize-requests-btn').addEventListener('click', handleSummarizeRequests);
+            document.getElementById('back-to-dashboard-btn').addEventListener('click', () => navigateTo('dashboard'));
+        }
+
+        // --- Manager Action Form Logic ---
+        let currentSelectedRequestId = null;
+        let currentActionType = ''; // 'approve' or 'deny'
+
+        function openActionForm(requestId, type) {
+            // Hide any currently open action forms
+            document.querySelectorAll('[id^="action-form-"]').forEach(form => form.classList.add('hidden'));
+
+            currentSelectedRequestId = requestId;
+            currentActionType = type;
+
+            const actionForm = document.getElementById(`action-form-${requestId}`);
+            if (actionForm) {
+                actionForm.classList.remove('hidden');
+                actionForm.querySelector('.action-type-text').textContent = type === 'approve' ? 'Approving' : 'Denying';
+                actionForm.querySelector('.manager-notes-textarea').value = ''; // Clear notes
+                const confirmBtn = actionForm.querySelector('.confirm-action-btn');
+                confirmBtn.textContent = `Confirm ${type === 'approve' ? 'Approval' : 'Denial'}`;
+                confirmBtn.className = `confirm-action-btn px-4 py-2 rounded-md text-white text-sm ${type === 'approve' ? 'bg-green-600 hover:bg-green-700' : 'bg-red-600 hover:bg-red-700'}`;
+                
+                // Remove previous listeners to prevent duplicates
+                const oldConfirmBtn = confirmBtn.cloneNode(true);
+                confirmBtn.parentNode.replaceChild(oldConfirmBtn, confirmBtn);
+
+                oldConfirmBtn.addEventListener('click', () => {
+                    const notes = actionForm.querySelector('.manager-notes-textarea').value;
+                    handleUpdateRequestStatus(currentSelectedRequestId, currentActionType === 'approve' ? 'Approved' : 'Denied', notes);
+                    currentSelectedRequestId = null; // Reset
+                    currentActionType = ''; // Reset
+                });
+
+                const draftEmailBtn = actionForm.querySelector('.draft-email-btn');
+                const oldDraftEmailBtn = draftEmailBtn.cloneNode(true);
+                draftEmailBtn.parentNode.replaceChild(oldDraftEmailBtn, draftEmailBtn);
+
+                oldDraftEmailBtn.addEventListener('click', async () => {
+                    const request = ptoRequests.find(r => r.id === currentSelectedRequestId);
+                    if (request) {
+                        const originalText = showLoading(oldDraftEmailBtn);
+                        await handleDraftEmail(request, actionForm.querySelector('.manager-notes-textarea').value);
+                        hideLoading(oldDraftEmailBtn, originalText);
+                    }
+                });
+
+                const cancelBtn = actionForm.querySelector('.cancel-action-btn');
+                const oldCancelBtn = cancelBtn.cloneNode(true);
+                cancelBtn.parentNode.replaceChild(oldCancelBtn, cancelBtn);
+                oldCancelBtn.addEventListener('click', () => {
+                    actionForm.classList.add('hidden');
+                    currentSelectedRequestId = null;
+                    currentActionType = '';
+                });
+            }
+        }
+
+        // --- LLM API Calls ---
+
+        /**
+         * Drafts an email using the Gemini API.
+         * @param {object} request - The PTO request object.
+         * @param {string} managerNotes - Notes from the manager.
+         */
+        async function handleDraftEmail(request, managerNotes) {
+            const status = currentActionType === 'approve' ? 'Approved' : 'Denied';
+            const prompt = `Draft a professional email to an employee regarding their PTO request.
+            Employee Name: ${request.userName}
+            Request Type: ${request.type}
+            Start Date: ${request.startDate}
+            End Date: ${request.endDate}
+            Duration: ${request.duration} days
+            Status: ${status}
+            Manager Notes: ${managerNotes || 'No specific notes.'}
+
+            Please ensure the email is concise, polite, and clearly states the outcome of the request.
+            `;
+
+            try {
+                let chatHistory = [];
+                chatHistory.push({ role: "user", parts: [{ text: prompt }] });
+                const payload = { contents: chatHistory };
+                const apiKey = ""; // If you want to use models other than gemini-2.0-flash or imagen-3.0-generate-002, provide an API key here. Otherwise, leave this as-is.
+                const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+
+                const response = await fetch(apiUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const result = await response.json();
+
+                if (result.candidates && result.candidates.length > 0 &&
+                    result.candidates[0].content && result.candidates[0].content.parts &&
+                    result.candidates[0].content.parts.length > 0) {
+                    showModal('Drafted Email', result.candidates[0].content.parts[0].text, copyToClipboard);
+                } else {
+                    showModal('Drafted Email', 'Failed to draft email. Please try again.', copyToClipboard);
+                }
+            } catch (error) {
+                console.error('Error drafting email:', error);
+                showModal('Drafted Email', 'An error occurred while drafting the email.', copyToClipboard);
+            }
+        }
+
+        /**
+         * Summarizes pending requests using the Gemini API.
+         */
+        async function handleSummarizeRequests() {
+            const summarizeBtn = document.getElementById('summarize-requests-btn');
+            const originalText = showLoading(summarizeBtn);
+
+            const pendingRequestsDetails = ptoRequests
+                .filter(req => req.status === 'Pending')
+                .map(req =>
+                    `${req.userName} requested ${req.duration} ${req.type} days from ${req.startDate} to ${req.endDate}. Comments: "${req.comments || 'N/A'}"`
+                ).join('\n');
+
+            const prompt = `Summarize the following pending PTO/Sick leave requests for a manager.
+            Highlight the total number of requests, the total days requested, and any common patterns or urgent requests if identifiable.
+
+            Pending Requests:
+            ${pendingRequestsDetails || 'No pending requests.'}
+            `;
+
+            try {
+                let chatHistory = [];
+                chatHistory.push({ role: "user", parts: [{ text: prompt }] });
+                const payload = { contents: chatHistory };
+                const apiKey = ""; // If you want to use models other than gemini-2.0-flash or imagen-3.0-generate-002, provide an API key here. Otherwise, leave this as-is.
+                const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+
+                const response = await fetch(apiUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const result = await response.json();
+
+                if (result.candidates && result.candidates.length > 0 &&
+                    result.candidates[0].content && result.candidates[0].content.parts &&
+                    result.candidates[0].content.parts.length > 0) {
+                    showModal('Pending Requests Summary', result.candidates[0].content.parts[0].text, copyToClipboard);
+                } else {
+                    showModal('Pending Requests Summary', 'Failed to generate summary. Please try again.', copyToClipboard);
+                }
+            } catch (error) {
+                console.error('Error summarizing requests:', error);
+                showModal('Pending Requests Summary', 'An error occurred while summarizing requests.', copyToClipboard);
+            } finally {
+                hideLoading(summarizeBtn, originalText);
+            }
+        }
+
+        // --- Initialize Application ---
+        document.addEventListener('DOMContentLoaded', () => {
+            modalCloseBtn.addEventListener('click', hideModal); // Attach close listener to modal
+            renderCurrentView(); // Initial render
+        });
+    </script>
+</body>
+</html>
